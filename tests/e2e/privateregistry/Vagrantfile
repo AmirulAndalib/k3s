@@ -2,7 +2,7 @@ ENV['VAGRANT_NO_PARALLEL'] = 'no'
 NODE_ROLES = (ENV['E2E_NODE_ROLES'] ||
   ["server-0", "agent-0"])
 NODE_BOXES = (ENV['E2E_NODE_BOXES'] ||
-  ['generic/ubuntu2204', 'generic/ubuntu2204', 'generic/ubuntu2204', 'generic/ubuntu2204', 'generic/ubuntu2204'])
+  ['bento/ubuntu-24.04', 'bento/ubuntu-24.04', 'bento/ubuntu-24.04', 'bento/ubuntu-24.04', 'bento/ubuntu-24.04'])
 GITHUB_BRANCH = (ENV['E2E_GITHUB_BRANCH'] || "master")
 RELEASE_VERSION = (ENV['E2E_RELEASE_VERSION'] || "")
 GOCOVER = (ENV['E2E_GOCOVER'] || "")
@@ -19,8 +19,8 @@ def provision(vm, role, role_num, node_num)
   node_ip = "#{NETWORK_PREFIX}.#{100+node_num}"
   vm.network "private_network", ip: node_ip, netmask: "255.255.255.0"
 
-  scripts_location = Dir.exists?("./scripts") ? "./scripts" : "../scripts"
-  vagrant_defaults = File.exists?("./vagrantdefaults.rb") ? "./vagrantdefaults.rb" : "../vagrantdefaults.rb"
+  scripts_location = Dir.exist?("./scripts") ? "./scripts" : "../scripts"
+  vagrant_defaults = File.exist?("./vagrantdefaults.rb") ? "./vagrantdefaults.rb" : "../vagrantdefaults.rb"
   load vagrant_defaults
 
   defaultOSConfigure(vm)
@@ -32,10 +32,13 @@ def provision(vm, role, role_num, node_num)
   # and still using the heredoc formatting with escapped quotes
   writePrivateRegistry = <<~'SCRIPT'.chomp % {net: NETWORK_PREFIX}
   mkdir -p /etc/rancher/k3s/
-  echo "mirrors:
+  echo 'mirrors:
     my-registry.local:
       endpoint:
-        - \"http://%{net}.100:5000\"" > /etc/rancher/k3s/registries.yaml
+        - http://%{net}.100:5000
+      rewrite:
+        "^library/(.*)$": "docker-io-library/$1"
+  ' > /etc/rancher/k3s/registries.yaml
   SCRIPT
 
   setInsecureRegistryPolicy = <<~'SCRIPT'.chomp % {net: NETWORK_PREFIX}
@@ -103,6 +106,8 @@ Vagrant.configure("2") do |config|
   config.vm.provider "libvirt" do |v|
     v.cpus = NODE_CPUS
     v.memory = NODE_MEMORY
+    # We replicate the default prefix, but add a timestamp to enable parallel runs and cleanup of old VMs
+    v.default_prefix = File.basename(Dir.getwd) + "_" + Time.now.to_i.to_s + "_"
   end
   config.vm.provider "virtualbox" do |v|
     v.cpus = NODE_CPUS

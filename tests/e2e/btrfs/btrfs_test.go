@@ -38,9 +38,9 @@ var _ = Describe("Verify that btrfs based servers work", Ordered, func() {
 			var err error
 			// OS and server are hardcoded because only openSUSE Leap 15.5 natively supports Btrfs
 			if *local {
-				serverNodeNames, _, err = e2e.CreateLocalCluster("opensuse/Leap-15.5.x86_64", 1, 0)
+				serverNodeNames, _, err = e2e.CreateLocalCluster("opensuse/Leap-15.6.x86_64", 1, 0)
 			} else {
-				serverNodeNames, _, err = e2e.CreateCluster("opensuse/Leap-15.5.x86_64", 1, 0)
+				serverNodeNames, _, err = e2e.CreateCluster("opensuse/Leap-15.6.x86_64", 1, 0)
 			}
 			Expect(err).NotTo(HaveOccurred(), e2e.GetVagrantLog(err))
 			fmt.Println("CLUSTER CONFIG")
@@ -78,8 +78,8 @@ var _ = Describe("Verify that btrfs based servers work", Ordered, func() {
 			cmd := "btrfs subvolume list /var/lib/rancher/k3s/agent/containerd/io.containerd.snapshotter.v1.btrfs"
 			res, err := e2e.RunCmdOnNode(cmd, serverNodeNames[0])
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(ContainSubstring("agent/containerd/io.containerd.snapshotter.v1.btrfs/active/2"))
-			Expect(res).To(ContainSubstring("agent/containerd/io.containerd.snapshotter.v1.btrfs/snapshots/3"))
+			Expect(res).To(MatchRegexp("agent/containerd/io.containerd.snapshotter.v1.btrfs/active/\\d+"))
+			Expect(res).To(MatchRegexp("agent/containerd/io.containerd.snapshotter.v1.btrfs/snapshots/\\d+"))
 		})
 	})
 })
@@ -90,6 +90,9 @@ var _ = AfterEach(func() {
 })
 
 var _ = AfterSuite(func() {
+	if failed {
+		Expect(e2e.SaveJournalLogs(serverNodeNames)).To(Succeed())
+	}
 	if !failed || *ci {
 		Expect(e2e.DestroyCluster()).To(Succeed())
 		Expect(os.Remove(kubeConfigFile)).To(Succeed())

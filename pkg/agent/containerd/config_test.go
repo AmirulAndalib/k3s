@@ -476,6 +476,86 @@ func Test_UnitGetHostConfigs(t *testing.T) {
 			},
 		},
 		{
+			name: "registry with mirror endpoint - duplicate endpoints",
+			args: args{
+				registryContent: `
+				  mirrors:
+						docker.io:
+							endpoint:
+								- registry.example.com
+								- registry.example.com
+				`,
+			},
+			want: HostConfigs{
+				"docker.io": templates.HostConfig{
+					Program: "k3s",
+					Default: &templates.RegistryEndpoint{
+						URL: u("https://registry-1.docker.io/v2"),
+					},
+					Endpoints: []templates.RegistryEndpoint{
+						{
+							URL: u("https://registry.example.com/v2"),
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "registry with mirror endpoint - duplicate endpoints in different formats",
+			args: args{
+				registryContent: `
+				  mirrors:
+						docker.io:
+							endpoint:
+								- registry.example.com
+								- https://registry.example.com
+								- https://registry.example.com/v2
+				`,
+			},
+			want: HostConfigs{
+				"docker.io": templates.HostConfig{
+					Program: "k3s",
+					Default: &templates.RegistryEndpoint{
+						URL: u("https://registry-1.docker.io/v2"),
+					},
+					Endpoints: []templates.RegistryEndpoint{
+						{
+							URL: u("https://registry.example.com/v2"),
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "registry with mirror endpoint - duplicate endpoints in different positions",
+			args: args{
+				registryContent: `
+				  mirrors:
+						docker.io:
+							endpoint:
+								- https://registry.example.com
+								- https://registry.example.org
+								- https://registry.example.com
+				`,
+			},
+			want: HostConfigs{
+				"docker.io": templates.HostConfig{
+					Program: "k3s",
+					Default: &templates.RegistryEndpoint{
+						URL: u("https://registry-1.docker.io/v2"),
+					},
+					Endpoints: []templates.RegistryEndpoint{
+						{
+							URL: u("https://registry.example.com/v2"),
+						},
+						{
+							URL: u("https://registry.example.org/v2"),
+						},
+					},
+				},
+			},
+		},
+		{
 			name: "registry with mirror endpoint - localhost and port only",
 			args: args{
 				registryContent: `
@@ -1113,6 +1193,16 @@ func Test_UnitGetHostConfigs(t *testing.T) {
 			},
 		},
 		{
+			name: "wildcard mirror endpoint - no endpoints",
+			args: args{
+				registryContent: `
+				  mirrors:
+						"*":
+				`,
+			},
+			want: HostConfigs{},
+		},
+		{
 			name: "wildcard mirror endpoint - full URL",
 			args: args{
 				registryContent: `
@@ -1125,6 +1215,9 @@ func Test_UnitGetHostConfigs(t *testing.T) {
 			want: HostConfigs{
 				"_default": templates.HostConfig{
 					Program: "k3s",
+					Default: &templates.RegistryEndpoint{
+						URL: u(""),
+					},
 					Endpoints: []templates.RegistryEndpoint{
 						{
 							URL: u("https://registry.example.com/v2"),
@@ -1137,6 +1230,55 @@ func Test_UnitGetHostConfigs(t *testing.T) {
 			name: "wildcard mirror endpoint - full URL, embedded registry",
 			args: args{
 				mirrorAddr: "127.0.0.1:6443",
+				registryContent: `
+				  mirrors:
+						"*":
+							endpoint:
+								- https://registry.example.com/v2
+				`,
+			},
+			want: HostConfigs{
+				"_default": templates.HostConfig{
+					Program: "k3s",
+					Default: &templates.RegistryEndpoint{
+						URL: u(""),
+					},
+					Endpoints: []templates.RegistryEndpoint{
+						{
+							URL: u("https://127.0.0.1:6443/v2"),
+							Config: registries.RegistryConfig{
+								TLS: &registries.TLSConfig{
+									CAFile:   "server-ca",
+									KeyFile:  "client-key",
+									CertFile: "client-cert",
+								},
+							},
+						},
+						{
+							URL: u("https://registry.example.com/v2"),
+						},
+					},
+				},
+				"127.0.0.1:6443": templates.HostConfig{
+					Program: "k3s",
+					Default: &templates.RegistryEndpoint{
+						URL: u("https://127.0.0.1:6443/v2"),
+						Config: registries.RegistryConfig{
+							TLS: &registries.TLSConfig{
+								CAFile:   "server-ca",
+								KeyFile:  "client-key",
+								CertFile: "client-cert",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "wildcard mirror endpoint - full URL, embedded registry, no default",
+			args: args{
+				noDefaultEndpoint: true,
+				mirrorAddr:        "127.0.0.1:6443",
 				registryContent: `
 				  mirrors:
 						"*":
@@ -1178,6 +1320,7 @@ func Test_UnitGetHostConfigs(t *testing.T) {
 				},
 			},
 		},
+
 		{
 			name: "wildcard config",
 			args: args{
@@ -1328,6 +1471,17 @@ func Test_UnitGetHostConfigs(t *testing.T) {
 				t.Fatalf("failed to parse %s: %v\n", registriesFile, err)
 			}
 
+			nodeConfig := &config.Node{
+				Containerd: config.Containerd{
+					Registry: tempDir + "/hosts.d",
+				},
+				AgentConfig: config.Agent{
+					ImageServiceSocket: "containerd-stargz-grpc.sock",
+					Registry:           registry.Registry,
+					Snapshotter:        "stargz",
+				},
+			}
+
 			// set up embedded registry, if enabled for the test
 			if tt.args.mirrorAddr != "" {
 				conf := spegel.DefaultRegistry
@@ -1335,7 +1489,7 @@ func Test_UnitGetHostConfigs(t *testing.T) {
 				conf.ClientKeyFile = "client-key"
 				conf.ClientCertFile = "client-cert"
 				conf.InternalAddress, conf.RegistryPort, _ = net.SplitHostPort(tt.args.mirrorAddr)
-				conf.InjectMirror(&config.Node{AgentConfig: config.Agent{Registry: registry.Registry}})
+				conf.InjectMirror(nodeConfig)
 			}
 
 			// Generate config template struct for all hosts
@@ -1351,11 +1505,7 @@ func Test_UnitGetHostConfigs(t *testing.T) {
 
 			// Confirm that the main containerd config.toml renders properly
 			containerdConfig := templates.ContainerdConfig{
-				NodeConfig: &config.Node{
-					Containerd: config.Containerd{
-						Registry: tempDir + "/hosts.d",
-					},
-				},
+				NodeConfig:            nodeConfig,
 				PrivateRegistryConfig: registry.Registry,
 				Program:               "k3s",
 			}

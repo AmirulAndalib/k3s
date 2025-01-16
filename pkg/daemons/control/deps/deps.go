@@ -29,8 +29,8 @@ import (
 	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/apiserver/pkg/apis/apiserver"
-	apiserverconfigv1 "k8s.io/apiserver/pkg/apis/config/v1"
+	apiserverconfigv1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
+	apiserverv1beta1 "k8s.io/apiserver/pkg/apis/apiserver/v1beta1"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/client-go/util/keyutil"
 )
@@ -42,8 +42,7 @@ const (
 	RequestHeaderCN = "system:auth-proxy"
 )
 
-var (
-	kubeconfigTemplate = template.Must(template.New("kubeconfig").Parse(`apiVersion: v1
+var kubeconfigTemplate = template.Must(template.New("kubeconfig").Parse(`apiVersion: v1
 clusters:
 - cluster:
     server: {{.URL}}
@@ -64,7 +63,6 @@ users:
     client-certificate: {{.ClientCert}}
     client-key: {{.ClientKey}}
 `))
-)
 
 func migratePassword(p *passwd.Passwd) error {
 	server, _ := p.Pass("server")
@@ -283,9 +281,7 @@ func genEncryptedNetworkInfo(controlConfig *config.Control) error {
 }
 
 func getServerPass(passwd *passwd.Passwd, config *config.Control) (string, error) {
-	var (
-		err error
-	)
+	var err error
 
 	serverPass := config.Token
 	if serverPass == "" {
@@ -395,11 +391,11 @@ func genClientCerts(config *config.Control) error {
 		}
 	}
 
-	if _, err = factory(user.KubeProxy, nil, runtime.ClientKubeProxyCert, runtime.ClientKubeProxyKey); err != nil {
+	if _, _, err := certutil.LoadOrGenerateKeyFile(runtime.ClientKubeProxyKey, regen); err != nil {
 		return err
 	}
-	// This user (system:k3s-controller by default) must be bound to a role in rolebindings.yaml or the downstream equivalent
-	if _, err = factory("system:"+version.Program+"-controller", nil, runtime.ClientK3sControllerCert, runtime.ClientK3sControllerKey); err != nil {
+
+	if _, _, err := certutil.LoadOrGenerateKeyFile(runtime.ClientK3sControllerKey, regen); err != nil {
 		return err
 	}
 
@@ -448,14 +444,16 @@ func genServerCerts(config *config.Control) error {
 }
 
 func genETCDCerts(config *config.Control) error {
-
 	runtime := config.Runtime
 	regen, err := createSigningCertKey("etcd-server", runtime.ETCDServerCA, runtime.ETCDServerCAKey)
 	if err != nil {
 		return err
 	}
 
-	altNames := &certutil.AltNames{}
+	altNames := &certutil.AltNames{
+		DNSNames: []string{"kine.sock"},
+	}
+
 	addSANs(altNames, config.SANs)
 
 	if _, err := createClientCertKey(regen, "etcd-client", nil,
@@ -787,19 +785,19 @@ func genEncryptionConfigAndState(controlConfig *config.Control) error {
 }
 
 func genEgressSelectorConfig(controlConfig *config.Control) error {
-	var clusterConn apiserver.Connection
+	var clusterConn apiserverv1beta1.Connection
 
 	if controlConfig.EgressSelectorMode == config.EgressSelectorModeDisabled {
-		clusterConn = apiserver.Connection{
-			ProxyProtocol: apiserver.ProtocolDirect,
+		clusterConn = apiserverv1beta1.Connection{
+			ProxyProtocol: apiserverv1beta1.ProtocolDirect,
 		}
 	} else {
-		clusterConn = apiserver.Connection{
-			ProxyProtocol: apiserver.ProtocolHTTPConnect,
-			Transport: &apiserver.Transport{
-				TCP: &apiserver.TCPTransport{
+		clusterConn = apiserverv1beta1.Connection{
+			ProxyProtocol: apiserverv1beta1.ProtocolHTTPConnect,
+			Transport: &apiserverv1beta1.Transport{
+				TCP: &apiserverv1beta1.TCPTransport{
 					URL: fmt.Sprintf("https://%s:%d", controlConfig.BindAddressOrLoopback(false, true), controlConfig.SupervisorPort),
-					TLSConfig: &apiserver.TLSConfig{
+					TLSConfig: &apiserverv1beta1.TLSConfig{
 						CABundle:   controlConfig.Runtime.ServerCA,
 						ClientKey:  controlConfig.Runtime.ClientKubeAPIKey,
 						ClientCert: controlConfig.Runtime.ClientKubeAPICert,
@@ -809,12 +807,12 @@ func genEgressSelectorConfig(controlConfig *config.Control) error {
 		}
 	}
 
-	egressConfig := apiserver.EgressSelectorConfiguration{
+	egressConfig := apiserverv1beta1.EgressSelectorConfiguration{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "EgressSelectorConfiguration",
 			APIVersion: "apiserver.k8s.io/v1beta1",
 		},
-		EgressSelections: []apiserver.EgressSelection{
+		EgressSelections: []apiserverv1beta1.EgressSelection{
 			{
 				Name:       "cluster",
 				Connection: clusterConn,
@@ -831,11 +829,12 @@ func genEgressSelectorConfig(controlConfig *config.Control) error {
 
 func genCloudConfig(controlConfig *config.Control) error {
 	cloudConfig := cloudprovider.Config{
-		LBEnabled:   !controlConfig.DisableServiceLB,
-		LBNamespace: controlConfig.ServiceLBNamespace,
-		LBImage:     cloudprovider.DefaultLBImage,
-		Rootless:    controlConfig.Rootless,
-		NodeEnabled: !controlConfig.DisableCCM,
+		LBDefaultPriorityClassName: cloudprovider.DefaultLBPriorityClassName,
+		LBEnabled:                  !controlConfig.DisableServiceLB,
+		LBNamespace:                controlConfig.ServiceLBNamespace,
+		LBImage:                    cloudprovider.DefaultLBImage,
+		Rootless:                   controlConfig.Rootless,
+		NodeEnabled:                !controlConfig.DisableCCM,
 	}
 	if controlConfig.SystemDefaultRegistry != "" {
 		cloudConfig.LBImage = controlConfig.SystemDefaultRegistry + "/" + cloudConfig.LBImage
@@ -845,5 +844,4 @@ func genCloudConfig(controlConfig *config.Control) error {
 		return err
 	}
 	return os.WriteFile(controlConfig.Runtime.CloudControllerConfig, b, 0600)
-
 }

@@ -14,9 +14,9 @@ import (
 )
 
 // Valid nodeOS:
-// generic/ubuntu2204, generic/centos7, generic/rocky8,
-// opensuse/Leap-15.3.x86_64
-var nodeOS = flag.String("nodeOS", "generic/ubuntu2204", "VM operating system")
+// bento/ubuntu-24.04, opensuse/Leap-15.6.x86_64
+// eurolinux-vagrant/rocky-8, eurolinux-vagrant/rocky-9,
+var nodeOS = flag.String("nodeOS", "bento/ubuntu-24.04", "VM operating system")
 var serverCount = flag.Int("serverCount", 3, "number of server nodes")
 var agentCount = flag.Int("agentCount", 2, "number of agent nodes")
 var hardened = flag.Bool("hardened", false, "true or false")
@@ -95,7 +95,7 @@ var _ = Describe("Verify Create", Ordered, func() {
 				cmd := "kubectl get pods -o=name -l k8s-app=nginx-app-clusterip --field-selector=status.phase=Running --kubeconfig=" + kubeConfigFile
 				res, err := e2e.RunCommand(cmd)
 				Expect(err).NotTo(HaveOccurred())
-				g.Expect(res).Should((ContainSubstring("test-clusterip")), "failed cmd: "+cmd+" result: "+res)
+				g.Expect(res).Should((ContainSubstring("test-clusterip")), "failed cmd: %q result: %s", cmd, res)
 			}, "240s", "5s").Should(Succeed())
 
 			clusterip, _ := e2e.FetchClusterIP(kubeConfigFile, "nginx-clusterip-svc", false)
@@ -130,7 +130,7 @@ var _ = Describe("Verify Create", Ordered, func() {
 
 				Eventually(func(g Gomega) {
 					res, err := e2e.RunCommand(cmd)
-					g.Expect(err).NotTo(HaveOccurred(), "failed cmd: "+cmd+" result: "+res)
+					g.Expect(err).NotTo(HaveOccurred(), "failed cmd: %q result: %s", cmd, res)
 					g.Expect(res).Should(ContainSubstring("test-nodeport"))
 				}, "240s", "5s").Should(Succeed())
 			}
@@ -150,14 +150,14 @@ var _ = Describe("Verify Create", Ordered, func() {
 				Eventually(func(g Gomega) {
 					cmd := "kubectl get pods -o=name -l k8s-app=nginx-app-loadbalancer --field-selector=status.phase=Running --kubeconfig=" + kubeConfigFile
 					res, err := e2e.RunCommand(cmd)
-					g.Expect(err).NotTo(HaveOccurred(), "failed cmd: "+cmd+" result: "+res)
+					g.Expect(err).NotTo(HaveOccurred(), "failed cmd: %q result: %s", cmd, res)
 					g.Expect(res).Should(ContainSubstring("test-loadbalancer"))
 				}, "240s", "5s").Should(Succeed())
 
 				Eventually(func(g Gomega) {
 					cmd = "curl -L --insecure http://" + ip + ":" + port + "/name.html"
 					res, err := e2e.RunCommand(cmd)
-					g.Expect(err).NotTo(HaveOccurred(), "failed cmd: "+cmd+" result: "+res)
+					g.Expect(err).NotTo(HaveOccurred(), "failed cmd: %q result: %s", cmd, res)
 					g.Expect(res).Should(ContainSubstring("test-loadbalancer"))
 				}, "240s", "5s").Should(Succeed())
 			}
@@ -174,7 +174,7 @@ var _ = Describe("Verify Create", Ordered, func() {
 
 				Eventually(func(g Gomega) {
 					res, err := e2e.RunCommand(cmd)
-					g.Expect(err).NotTo(HaveOccurred(), "failed cmd: "+cmd+" result: "+res)
+					g.Expect(err).NotTo(HaveOccurred(), "failed cmd: %q result: %s", cmd, res)
 					g.Expect(res).Should(ContainSubstring("test-ingress"))
 				}, "240s", "5s").Should(Succeed())
 			}
@@ -204,7 +204,7 @@ var _ = Describe("Verify Create", Ordered, func() {
 			Eventually(func(g Gomega) {
 				cmd := "kubectl get pods dnsutils --kubeconfig=" + kubeConfigFile
 				res, err := e2e.RunCommand(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "failed cmd: "+cmd+" result: "+res)
+				g.Expect(err).NotTo(HaveOccurred(), "failed cmd: %q result: %s", cmd, res)
 				g.Expect(res).Should(ContainSubstring("dnsutils"))
 			}, "420s", "2s").Should(Succeed())
 
@@ -212,7 +212,7 @@ var _ = Describe("Verify Create", Ordered, func() {
 				cmd := "kubectl --kubeconfig=" + kubeConfigFile + " exec -i -t dnsutils -- nslookup kubernetes.default"
 
 				res, err := e2e.RunCommand(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "failed cmd: "+cmd+" result: "+res)
+				g.Expect(err).NotTo(HaveOccurred(), "failed cmd: %q result: %s", cmd, res)
 				g.Expect(res).Should(ContainSubstring("kubernetes.default.svc.cluster.local"))
 			}, "420s", "2s").Should(Succeed())
 		})
@@ -224,7 +224,7 @@ var _ = Describe("Verify Create", Ordered, func() {
 			Eventually(func(g Gomega) {
 				cmd := "kubectl get pvc local-path-pvc --kubeconfig=" + kubeConfigFile
 				res, err := e2e.RunCommand(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "failed cmd: "+cmd+" result: "+res)
+				g.Expect(err).NotTo(HaveOccurred(), "failed cmd: %q result: %s", cmd, res)
 				g.Expect(res).Should(ContainSubstring("local-path-pvc"))
 				g.Expect(res).Should(ContainSubstring("Bound"))
 			}, "420s", "2s").Should(Succeed())
@@ -232,18 +232,18 @@ var _ = Describe("Verify Create", Ordered, func() {
 			Eventually(func(g Gomega) {
 				cmd := "kubectl get pod volume-test --kubeconfig=" + kubeConfigFile
 				res, err := e2e.RunCommand(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "failed cmd: "+cmd+" result: "+res)
+				g.Expect(err).NotTo(HaveOccurred(), "failed cmd: %q result: %s", cmd, res)
 				g.Expect(res).Should(ContainSubstring("volume-test"))
 				g.Expect(res).Should(ContainSubstring("Running"))
 			}, "420s", "2s").Should(Succeed())
 
 			cmd := "kubectl --kubeconfig=" + kubeConfigFile + " exec volume-test -- sh -c 'echo local-path-test > /data/test'"
-			_, err = e2e.RunCommand(cmd)
-			Expect(err).NotTo(HaveOccurred())
+			res, err = e2e.RunCommand(cmd)
+			Expect(err).NotTo(HaveOccurred(), "failed cmd: %q result: %s", cmd, res)
 
 			cmd = "kubectl delete pod volume-test --kubeconfig=" + kubeConfigFile
 			res, err = e2e.RunCommand(cmd)
-			Expect(err).NotTo(HaveOccurred(), "failed cmd: "+cmd+" result: "+res)
+			Expect(err).NotTo(HaveOccurred(), "failed cmd: %q result: %s", cmd, res)
 
 			_, err = e2e.DeployWorkload("local-path-provisioner.yaml", kubeConfigFile, *hardened)
 			Expect(err).NotTo(HaveOccurred(), "local-path-provisioner manifest not deployed")
@@ -257,7 +257,7 @@ var _ = Describe("Verify Create", Ordered, func() {
 			Eventually(func(g Gomega) {
 				cmd := "kubectl get pod volume-test --kubeconfig=" + kubeConfigFile
 				res, err := e2e.RunCommand(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "failed cmd: "+cmd+" result: "+res)
+				g.Expect(err).NotTo(HaveOccurred(), "failed cmd: %q result: %s", cmd, res)
 
 				g.Expect(res).Should(ContainSubstring("volume-test"))
 				g.Expect(res).Should(ContainSubstring("Running"))
@@ -266,7 +266,7 @@ var _ = Describe("Verify Create", Ordered, func() {
 			Eventually(func(g Gomega) {
 				cmd := "kubectl exec volume-test --kubeconfig=" + kubeConfigFile + " -- cat /data/test"
 				res, err = e2e.RunCommand(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "failed cmd: "+cmd+" result: "+res)
+				g.Expect(err).NotTo(HaveOccurred(), "failed cmd: %q result: %s", cmd, res)
 				fmt.Println("Data after re-creation", res)
 				g.Expect(res).Should(ContainSubstring("local-path-test"))
 			}, "180s", "2s").Should(Succeed())
@@ -345,7 +345,6 @@ var _ = Describe("Verify Create", Ordered, func() {
 			// Everything else should be changed.
 			var expectResult = []string{
 				"client-ca.crt", "client-ca.key", "client-ca.nochain.crt",
-				"client-supervisor.crt", "client-supervisor.key",
 				"peer-ca.crt", "peer-ca.key",
 				"server-ca.crt", "server-ca.key",
 				"request-header-ca.crt", "request-header-ca.key",
@@ -382,7 +381,9 @@ var _ = AfterEach(func() {
 })
 
 var _ = AfterSuite(func() {
-	if !failed {
+	if failed {
+		AddReportEntry("journald-logs", e2e.TailJournalLogs(1000, append(serverNodeNames, agentNodeNames...)))
+	} else {
 		Expect(e2e.GetCoverageReport(append(serverNodeNames, agentNodeNames...))).To(Succeed())
 	}
 	if !failed || *ci {

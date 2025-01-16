@@ -13,6 +13,9 @@ import (
 	"k8s.io/component-base/cli"
 	"k8s.io/kubectl/pkg/cmd"
 	"k8s.io/kubectl/pkg/cmd/util"
+
+	// Import to initialize client auth plugins.
+	_ "k8s.io/client-go/plugin/pkg/client/auth"
 )
 
 func Main() {
@@ -54,7 +57,8 @@ func checkReadConfigPermissions(configFile string) error {
 	if err != nil {
 		if os.IsPermission(err) {
 			return fmt.Errorf("Unable to read %s, please start server "+
-				"with --write-kubeconfig-mode to modify kube config permissions", configFile)
+				"with --write-kubeconfig-mode or --write-kubeconfig-group "+
+				"to modify kube config permissions", configFile)
 		}
 	}
 	file.Close()

@@ -13,9 +13,9 @@ import (
 )
 
 // Valid nodeOS:
-// generic/ubuntu2204, generic/centos7, generic/rocky8
-// opensuse/Leap-15.3.x86_64
-var nodeOS = flag.String("nodeOS", "generic/ubuntu2204", "VM operating system")
+// bento/ubuntu-24.04, eurolinux-vagrant/rocky-8, eurolinux-vagrant/rocky-9
+// opensuse/Leap-15.6.x86_64
+var nodeOS = flag.String("nodeOS", "bento/ubuntu-24.04", "VM operating system")
 var serverCount = flag.Int("serverCount", 3, "number of server nodes")
 var agentCount = flag.Int("agentCount", 2, "number of agent nodes")
 var hardened = flag.Bool("hardened", false, "true or false")
@@ -215,14 +215,13 @@ var _ = Describe("Verify Upgrade", Ordered, func() {
 			}, "420s", "2s").Should(Succeed())
 
 			cmd := "kubectl --kubeconfig=" + kubeConfigFile + " exec volume-test -- sh -c 'echo local-path-test > /data/test'"
-			_, err = e2e.RunCommand(cmd)
-			Expect(err).NotTo(HaveOccurred())
+			res, err := e2e.RunCommand(cmd)
+			Expect(err).NotTo(HaveOccurred(), "failed cmd: %q result: %s", cmd, res)
 			fmt.Println("Data stored in pvc: local-path-test")
 
 			cmd = "kubectl delete pod volume-test --kubeconfig=" + kubeConfigFile
-			res, err := e2e.RunCommand(cmd)
-			Expect(err).NotTo(HaveOccurred())
-			fmt.Println(res)
+			res, err = e2e.RunCommand(cmd)
+			Expect(err).NotTo(HaveOccurred(), "failed cmd: %q result: %s", cmd, res)
 
 			_, err = e2e.DeployWorkload("local-path-provisioner.yaml", kubeConfigFile, *hardened)
 			Expect(err).NotTo(HaveOccurred(), "local-path-provisioner manifest not deployed")
@@ -245,7 +244,7 @@ var _ = Describe("Verify Upgrade", Ordered, func() {
 			Eventually(func() (string, error) {
 				cmd := "kubectl exec volume-test --kubeconfig=" + kubeConfigFile + " -- cat /data/test"
 				return e2e.RunCommand(cmd)
-			}, "180s", "2s").Should(ContainSubstring("local-path-test"))
+			}, "180s", "2s").Should(ContainSubstring("local-path-test"), "Failed to retrieve data from pvc")
 		})
 
 		It("Upgrades with no issues", func() {
@@ -385,7 +384,9 @@ var _ = AfterEach(func() {
 })
 
 var _ = AfterSuite(func() {
-	if !failed {
+	if failed {
+		AddReportEntry("journald-logs", e2e.TailJournalLogs(1000, append(serverNodeNames, agentNodeNames...)))
+	} else {
 		Expect(e2e.GetCoverageReport(append(serverNodeNames, agentNodeNames...))).To(Succeed())
 	}
 	if !failed || *ci {

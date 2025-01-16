@@ -1,6 +1,7 @@
 package containerd
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 	"net/url"
@@ -46,7 +47,9 @@ func writeContainerdHosts(cfg *config.Node, containerdConfig templates.Container
 	hosts := getHostConfigs(containerdConfig.PrivateRegistryConfig, containerdConfig.NoDefaultEndpoint, mirrorAddr)
 
 	// Clean up previous configuration templates
-	os.RemoveAll(cfg.Containerd.Registry)
+	if err := cleanContainerdHosts(cfg.Containerd.Registry, hosts); err != nil {
+		return err
+	}
 
 	// Write out new templates
 	for host, config := range hosts {
@@ -61,6 +64,48 @@ func writeContainerdHosts(cfg *config.Node, containerdConfig templates.Container
 		}
 		if err := util2.WriteFile(hostsFile, hostsTemplate); err != nil {
 			return err
+		}
+	}
+
+	return nil
+}
+
+// cleanContainerdHosts removes any registry host config dirs containing a hosts.toml file
+// with a header that indicates it was created by k3s, or directories where a hosts.toml
+// is about to be written.  Unmanaged directories not containing this file, or containing
+// a file without the header, are left alone.
+func cleanContainerdHosts(dir string, hosts HostConfigs) error {
+	// clean directories for any registries that we are about to generate a hosts.toml for
+	for host := range hosts {
+		hostsDir := filepath.Join(dir, host)
+		os.RemoveAll(hostsDir)
+	}
+
+	// clean directories that contain a hosts.toml with a header indicating it was  created by k3s
+	ents, err := os.ReadDir(dir)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	for _, ent := range ents {
+		if !ent.IsDir() {
+			continue
+		}
+		hostsFile := filepath.Join(dir, ent.Name(), "hosts.toml")
+		file, err := os.Open(hostsFile)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		line, err := bufio.NewReader(file).ReadString('\n')
+		if err != nil {
+			continue
+		}
+		if line == templates.HostsTomlHeader {
+			hostsDir := filepath.Join(dir, ent.Name())
+			os.RemoveAll(hostsDir)
 		}
 	}
 
@@ -92,12 +137,17 @@ func getHostConfigs(registry *registries.Registry, noDefaultEndpoint bool, mirro
 				logrus.Errorf("Failed to generate config for registry %s: %v", host, err)
 				continue
 			} else {
-				if host == "*" || noDefaultEndpoint {
+				if noDefaultEndpoint {
 					c.Default = nil
+				} else if host == "*" {
+					c.Default = &templates.RegistryEndpoint{URL: &url.URL{}}
 				}
 				config = *c
 			}
 		}
+
+		// track which endpoints we've already seen to avoid creating duplicates
+		seenEndpoint := map[string]bool{}
 
 		// TODO: rewrites are currently copied from the mirror settings into each endpoint.
 		// In the future, we should allow for per-endpoint rewrites, instead of expecting
@@ -107,7 +157,10 @@ func getHostConfigs(registry *registries.Registry, noDefaultEndpoint bool, mirro
 			registryName, url, override, err := normalizeEndpointAddress(endpoint, mirrorAddr)
 			if err != nil {
 				logrus.Warnf("Ignoring invalid endpoint URL %d=%s for %s: %v", i, endpoint, host, err)
+			} else if _, ok := seenEndpoint[url.String()]; ok {
+				logrus.Warnf("Skipping duplicate endpoint URL %d=%s for %s", i, endpoint, host)
 			} else {
+				seenEndpoint[url.String()] = true
 				var rewrites map[string]string
 				// Do not apply rewrites to the embedded registry endpoint
 				if url.Host != mirrorAddr {

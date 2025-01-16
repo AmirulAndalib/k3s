@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
@@ -24,19 +23,19 @@ import (
 	"github.com/k3s-io/k3s/pkg/nodepassword"
 	"github.com/k3s-io/k3s/pkg/rootlessports"
 	"github.com/k3s-io/k3s/pkg/secretsencrypt"
+	"github.com/k3s-io/k3s/pkg/server/handlers"
 	"github.com/k3s-io/k3s/pkg/static"
 	"github.com/k3s-io/k3s/pkg/util"
 	"github.com/k3s-io/k3s/pkg/version"
 	"github.com/pkg/errors"
-	"github.com/rancher/wrangler/pkg/apply"
-	v1 "github.com/rancher/wrangler/pkg/generated/controllers/core/v1"
-	"github.com/rancher/wrangler/pkg/leader"
-	"github.com/rancher/wrangler/pkg/resolvehome"
+	"github.com/rancher/wrangler/v3/pkg/apply"
+	v1 "github.com/rancher/wrangler/v3/pkg/generated/controllers/core/v1"
+	"github.com/rancher/wrangler/v3/pkg/leader"
+	"github.com/rancher/wrangler/v3/pkg/resolvehome"
 	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clientset "k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 func ResolveDataDir(dataDir string) (string, error) {
@@ -60,7 +59,7 @@ func StartServer(ctx context.Context, config *Config, cfg *cmds.Server) error {
 	wg := &sync.WaitGroup{}
 	wg.Add(len(config.StartupHooks))
 
-	config.ControlConfig.Runtime.Handler = router(ctx, config, cfg)
+	config.ControlConfig.Runtime.Handler = handlers.NewHandler(ctx, &config.ControlConfig, cfg)
 	config.ControlConfig.Runtime.StartupHooksWg = wg
 
 	shArgs := cmds.StartupHookArgs{
@@ -114,6 +113,7 @@ func runControllers(ctx context.Context, config *Config) error {
 		controlConfig.Runtime.NodePasswdFile); err != nil {
 		logrus.Warn(errors.Wrap(err, "error migrating node-password file"))
 	}
+	controlConfig.Runtime.K8s = sc.K8s
 	controlConfig.Runtime.K3s = sc.K3s
 	controlConfig.Runtime.Event = sc.Event
 	controlConfig.Runtime.Core = sc.Core
@@ -167,8 +167,8 @@ func apiserverControllers(ctx context.Context, sc *Context, config *Config) {
 		}
 	}
 
-	// Re-run context startup after core and leader-elected controllers have started. Additional
-	// informer caches may need to start for the newly added OnChange callbacks.
+	// Re-run informer factory startup after core and leader-elected controllers have started.
+	// Additional caches may need to start for the newly added OnChange/OnRemove callbacks.
 	if err := sc.Start(ctx); err != nil {
 		panic(errors.Wrap(err, "failed to start wranger controllers"))
 	}
@@ -209,7 +209,7 @@ func coreControllers(ctx context.Context, sc *Context, config *Config) error {
 	}
 
 	if !config.ControlConfig.DisableHelmController {
-		restConfig, err := clientcmd.BuildConfigFromFlags("", config.ControlConfig.Runtime.KubeConfigSupervisor)
+		restConfig, err := util.GetRESTConfig(config.ControlConfig.Runtime.KubeConfigSupervisor)
 		if err != nil {
 			return err
 		}
@@ -220,7 +220,7 @@ func coreControllers(ctx context.Context, sc *Context, config *Config) error {
 			return err
 		}
 
-		apply := apply.New(k8s, apply.NewClientFactory(restConfig)).WithDynamicLookup()
+		apply := apply.New(k8s, apply.NewClientFactory(restConfig)).WithDynamicLookup().WithSetOwnerReference(false, false)
 		helm := sc.Helm.WithAgent(restConfig.UserAgent)
 		batch := sc.Batch.WithAgent(restConfig.UserAgent)
 		auth := sc.Auth.WithAgent(restConfig.UserAgent)
@@ -282,15 +282,11 @@ func stageFiles(ctx context.Context, sc *Context, controlConfig *config.Control)
 	}
 
 	skip := controlConfig.Skips
-	if !skip["traefik"] && isHelmChartTraefikV1(sc) {
-		logrus.Warn("Skipping Traefik v2 deployment due to existing Traefik v1 installation")
-		skip["traefik"] = true
-	}
 	if err := deploy.Stage(dataDir, templateVars, skip); err != nil {
 		return err
 	}
 
-	restConfig, err := clientcmd.BuildConfigFromFlags("", controlConfig.Runtime.KubeConfigSupervisor)
+	restConfig, err := util.GetRESTConfig(controlConfig.Runtime.KubeConfigSupervisor)
 	if err != nil {
 		return err
 	}
@@ -332,23 +328,6 @@ func addrTypesPrioTemplate(flannelExternal bool) string {
 	return "InternalIP,ExternalIP,Hostname"
 }
 
-// isHelmChartTraefikV1 checks for an existing HelmChart resource with spec.chart containing traefik-1,
-// as deployed by the legacy chart (https://%{KUBERNETES_API}%/static/charts/traefik-1.81.0.tgz)
-func isHelmChartTraefikV1(sc *Context) bool {
-	prefix := "traefik-1."
-	helmChart, err := sc.Helm.Helm().V1().HelmChart().Get(metav1.NamespaceSystem, "traefik", metav1.GetOptions{})
-	if err != nil {
-		logrus.WithError(err).Info("Failed to get existing traefik HelmChart")
-		return false
-	}
-	chart := path.Base(helmChart.Spec.Chart)
-	if strings.HasPrefix(chart, prefix) {
-		logrus.WithField("chart", chart).Info("Found existing traefik v1 HelmChart")
-		return true
-	}
-	return false
-}
-
 func HomeKubeConfig(write, rootless bool) (string, error) {
 	if write {
 		if os.Getuid() == 0 && !rootless {
@@ -368,7 +347,7 @@ func printTokens(config *config.Control) error {
 	var serverTokenFile string
 	if config.Runtime.ServerToken != "" {
 		serverTokenFile = filepath.Join(config.DataDir, "token")
-		if err := writeToken(config.Runtime.ServerToken, serverTokenFile, config.Runtime.ServerCA); err != nil {
+		if err := handlers.WriteToken(config.Runtime.ServerToken, serverTokenFile, config.Runtime.ServerCA); err != nil {
 			return err
 		}
 
@@ -396,7 +375,7 @@ func printTokens(config *config.Control) error {
 					return err
 				}
 			}
-			if err := writeToken(config.Runtime.AgentToken, agentTokenFile, config.Runtime.ServerCA); err != nil {
+			if err := handlers.WriteToken(config.Runtime.AgentToken, agentTokenFile, config.Runtime.ServerCA); err != nil {
 				return err
 			}
 		} else if serverTokenFile != "" {
@@ -465,6 +444,13 @@ func writeKubeConfig(certs string, config *Config) error {
 		util.SetFileModeForPath(kubeConfig, os.FileMode(0600))
 	}
 
+	if config.ControlConfig.KubeConfigGroup != "" {
+		err := util.SetFileGroupForPath(kubeConfig, config.ControlConfig.KubeConfigGroup)
+		if err != nil {
+			logrus.Errorf("Failed to set %s to group %s: %v", kubeConfig, config.ControlConfig.KubeConfigGroup, err)
+		}
+	}
+
 	if kubeConfigSymlink != kubeConfig {
 		if err := writeConfigSymlink(kubeConfig, kubeConfigSymlink); err != nil {
 			logrus.Errorf("Failed to write kubeconfig symlink: %v", err)
@@ -503,18 +489,6 @@ func setupDataDirAndChdir(config *config.Control) error {
 
 func printToken(httpsPort int, advertiseIP, prefix, cmd, varName string) {
 	logrus.Infof("%s %s %s -s https://%s:%d -t ${%s}", prefix, version.Program, cmd, advertiseIP, httpsPort, varName)
-}
-
-func writeToken(token, file, certs string) error {
-	if len(token) == 0 {
-		return nil
-	}
-
-	token, err := clientaccess.FormatToken(token, certs)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(file, []byte(token+"\n"), 0600)
 }
 
 func setNoProxyEnv(config *config.Control) error {

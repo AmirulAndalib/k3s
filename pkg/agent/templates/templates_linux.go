@@ -19,6 +19,7 @@ version = 2
   enable_selinux = {{ .NodeConfig.SELinux }}
   enable_unprivileged_ports = {{ .EnableUnprivileged }}
   enable_unprivileged_icmp = {{ .EnableUnprivileged }}
+  device_ownership_from_security_context = {{ .NonrootDevices }}
 
 {{- if .DisableCgroup}}
   disable_cgroup = true
@@ -44,19 +45,11 @@ cri_keychain_image_service_path = "{{ .NodeConfig.AgentConfig.ImageServiceSocket
 [plugins."io.containerd.snapshotter.v1.stargz".cri_keychain]
 enable_keychain = true
 {{end}}
+
+[plugins."io.containerd.snapshotter.v1.stargz".registry]
+  config_path = "{{ .NodeConfig.Containerd.Registry }}"
+
 {{ if .PrivateRegistryConfig }}
-{{ if .PrivateRegistryConfig.Mirrors }}
-[plugins."io.containerd.snapshotter.v1.stargz".registry.mirrors]{{end}}
-{{range $k, $v := .PrivateRegistryConfig.Mirrors }}
-[plugins."io.containerd.snapshotter.v1.stargz".registry.mirrors."{{$k}}"]
-  endpoint = [{{range $i, $j := $v.Endpoints}}{{if $i}}, {{end}}{{printf "%q" .}}{{end}}]
-{{if $v.Rewrites}}
-  [plugins."io.containerd.snapshotter.v1.stargz".registry.mirrors."{{$k}}".rewrite]
-{{range $pattern, $replace := $v.Rewrites}}
-    "{{$pattern}}" = "{{$replace}}"
-{{end}}
-{{end}}
-{{end}}
 {{range $k, $v := .PrivateRegistryConfig.Configs }}
 {{ if $v.Auth }}
 [plugins."io.containerd.snapshotter.v1.stargz".registry.configs."{{$k}}".auth]
@@ -64,13 +57,6 @@ enable_keychain = true
   {{ if $v.Auth.Password }}password = {{ printf "%q" $v.Auth.Password }}{{end}}
   {{ if $v.Auth.Auth }}auth = {{ printf "%q" $v.Auth.Auth }}{{end}}
   {{ if $v.Auth.IdentityToken }}identitytoken = {{ printf "%q" $v.Auth.IdentityToken }}{{end}}
-{{end}}
-{{ if $v.TLS }}
-[plugins."io.containerd.snapshotter.v1.stargz".registry.configs."{{$k}}".tls]
-  {{ if $v.TLS.CAFile }}ca_file = "{{ $v.TLS.CAFile }}"{{end}}
-  {{ if $v.TLS.CertFile }}cert_file = "{{ $v.TLS.CertFile }}"{{end}}
-  {{ if $v.TLS.KeyFile }}key_file = "{{ $v.TLS.KeyFile }}"{{end}}
-  {{ if $v.TLS.InsecureSkipVerify }}insecure_skip_verify = true{{end}}
 {{end}}
 {{end}}
 {{end}}

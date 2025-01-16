@@ -55,7 +55,7 @@ func findK3sExecutable() string {
 		break
 	}
 	if i == 20 {
-		logrus.Fatal("Unable to find k3s executable")
+		logrus.Fatalf("Unable to find k3s executable in %s", k3sBin)
 	}
 	return k3sBin
 }
@@ -130,33 +130,24 @@ func K3sServerArgs() []string {
 
 // K3sDefaultDeployments checks if the default deployments for K3s are ready, otherwise returns an error
 func K3sDefaultDeployments() error {
-	return CheckDeployments([]string{"coredns", "local-path-provisioner", "metrics-server", "traefik"})
+	return CheckDeployments(metav1.NamespaceSystem, []string{"coredns", "local-path-provisioner", "metrics-server", "traefik"})
 }
 
 // CheckDeployments checks if the provided list of deployments are ready, otherwise returns an error
-func CheckDeployments(deployments []string) error {
-
-	deploymentSet := make(map[string]bool)
-	for _, d := range deployments {
-		deploymentSet[d] = false
-	}
-
+func CheckDeployments(namespace string, deployments []string) error {
 	client, err := k8sClient()
 	if err != nil {
 		return err
 	}
-	deploymentList, err := client.AppsV1().Deployments("").List(context.Background(), metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	for _, deployment := range deploymentList.Items {
-		if _, ok := deploymentSet[deployment.Name]; ok && deployment.Status.ReadyReplicas == deployment.Status.Replicas {
-			deploymentSet[deployment.Name] = true
+
+	for _, deploymentName := range deployments {
+		deployment, err := client.AppsV1().Deployments(namespace).Get(context.Background(), deploymentName, metav1.GetOptions{})
+		if err != nil {
+			return err
 		}
-	}
-	for d, found := range deploymentSet {
-		if !found {
-			return fmt.Errorf("failed to deploy %s", d)
+		if deployment.Status.ReadyReplicas != deployment.Status.Replicas || deployment.Status.AvailableReplicas != deployment.Status.Replicas {
+			return fmt.Errorf("deployment %s not ready: replicas=%d readyReplicas=%d availableReplicas=%d",
+				deploymentName, deployment.Status.Replicas, deployment.Status.ReadyReplicas, deployment.Status.AvailableReplicas)
 		}
 	}
 
@@ -254,6 +245,7 @@ func K3sStartServer(inputArgs ...string) (*K3sServer, error) {
 		return nil, err
 	}
 	cmd.Stderr = f
+	logrus.Info("Starting k3s server. Check k3log.txt for logs")
 	err = cmd.Start()
 	return &K3sServer{cmd, f}, err
 }
@@ -388,9 +380,10 @@ func RunCommand(cmd string) (string, error) {
 	c := exec.Command("bash", "-c", cmd)
 	var out bytes.Buffer
 	c.Stdout = &out
+	c.Stderr = &out
 	err := c.Run()
 	if err != nil {
-		return "", fmt.Errorf("%s", err)
+		return out.String(), fmt.Errorf("%s", err)
 	}
 	return out.String(), nil
 }

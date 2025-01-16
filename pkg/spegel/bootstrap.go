@@ -10,12 +10,13 @@ import (
 
 	"github.com/k3s-io/k3s/pkg/clientaccess"
 	"github.com/k3s-io/k3s/pkg/daemons/config"
+	"github.com/k3s-io/k3s/pkg/util"
 	"github.com/k3s-io/k3s/pkg/version"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/pkg/errors"
-	"github.com/rancher/wrangler/pkg/merr"
+	"github.com/rancher/wrangler/v3/pkg/merr"
 	"github.com/sirupsen/logrus"
-	"github.com/xenitab/spegel/pkg/routing"
+	"github.com/spegel-org/spegel/pkg/routing"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -102,7 +103,7 @@ func NewServerBootstrapper(controlConfig *config.Control) routing.Bootstrapper {
 func (s *serverBootstrapper) Run(_ context.Context, id string) error {
 	s.controlConfig.Runtime.ClusterControllerStarts["spegel-p2p"] = func(ctx context.Context) {
 		nodes := s.controlConfig.Runtime.Core.Core().V1().Node()
-		wait.PollImmediateUntilWithContext(ctx, 1*time.Second, func(ctx context.Context) (bool, error) {
+		_ = wait.PollUntilContextCancel(ctx, 1*time.Second, true, func(ctx context.Context) (bool, error) {
 			nodeName := os.Getenv("NODE_NAME")
 			if nodeName == "" {
 				return false, nil
@@ -133,7 +134,7 @@ func (s *serverBootstrapper) Run(_ context.Context, id string) error {
 
 func (s *serverBootstrapper) Get() (addrInfo *peer.AddrInfo, err error) {
 	if s.controlConfig.Runtime.Core == nil {
-		return nil, errors.New("runtime core not ready")
+		return nil, util.ErrCoreNotReady
 	}
 	nodeName := os.Getenv("NODE_NAME")
 	if nodeName == "" {

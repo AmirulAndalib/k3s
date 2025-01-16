@@ -13,9 +13,9 @@ import (
 )
 
 // Valid nodeOS:
-// generic/ubuntu2204, generic/centos7, generic/rocky8,
-// opensuse/Leap-15.3.x86_64
-var nodeOS = flag.String("nodeOS", "generic/ubuntu2204", "VM operating system")
+// bento/ubuntu-24.04, opensuse/Leap-15.6.x86_64
+// eurolinux-vagrant/rocky-8, eurolinux-vagrant/rocky-9,
+var nodeOS = flag.String("nodeOS", "bento/ubuntu-24.04", "VM operating system")
 var serverCount = flag.Int("serverCount", 1, "number of server nodes")
 var agentCount = flag.Int("agentCount", 1, "number of agent nodes")
 var ci = flag.Bool("ci", false, "running on CI")
@@ -84,7 +84,7 @@ var _ = Describe("Verify Create", Ordered, func() {
 		})
 
 		It("Create new private registry", func() {
-			registry, err := e2e.RunCmdOnNode("docker run -d -p 5000:5000 --restart=always --name registry registry:2 ", serverNodeNames[0])
+			registry, err := e2e.RunCmdOnNode("docker run --init -d -p 5000:5000 --restart=always --name registry registry:2 ", serverNodeNames[0])
 			fmt.Println(registry)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -95,28 +95,32 @@ var _ = Describe("Verify Create", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 
 		})
+		// Mirror the image as NODEIP:5000/docker-io-library/nginx:1.27.3, but reference it as my-registry.local/library/nginx:1.27.3 -
+		// the rewrite in registries.yaml's entry for my-registry.local should ensure that it is rewritten properly when pulling from
+		// NODEIP:5000 as a mirror.
 		It("Should pull and image from dockerhub and send it to private registry", func() {
-			cmd := "docker pull nginx"
+			cmd := "docker pull docker.io/library/nginx:1.27.3"
 			_, err := e2e.RunCmdOnNode(cmd, serverNodeNames[0])
 			Expect(err).NotTo(HaveOccurred(), "failed: "+cmd)
 
 			nodeIP, err := e2e.FetchNodeExternalIP(serverNodeNames[0])
 			Expect(err).NotTo(HaveOccurred())
 
-			cmd = "docker tag nginx " + nodeIP + ":5000/my-webpage"
+			cmd = "docker tag docker.io/library/nginx:1.27.3 " + nodeIP + ":5000/docker-io-library/nginx:1.27.3"
 			_, err = e2e.RunCmdOnNode(cmd, serverNodeNames[0])
 			Expect(err).NotTo(HaveOccurred(), "failed: "+cmd)
 
-			cmd = "docker push " + nodeIP + ":5000/my-webpage"
+			cmd = "docker push " + nodeIP + ":5000/docker-io-library/nginx:1.27.3"
 			_, err = e2e.RunCmdOnNode(cmd, serverNodeNames[0])
 			Expect(err).NotTo(HaveOccurred(), "failed: "+cmd)
 
-			cmd = "docker image remove nginx " + nodeIP + ":5000/my-webpage"
+			cmd = "docker image remove docker.io/library/nginx:1.27.3 " + nodeIP + ":5000/docker-io-library/nginx:1.27.3"
 			_, err = e2e.RunCmdOnNode(cmd, serverNodeNames[0])
 			Expect(err).NotTo(HaveOccurred(), "failed: "+cmd)
 		})
+
 		It("Should create and validate deployment with private registry on", func() {
-			res, err := e2e.RunCmdOnNode("kubectl create deployment my-webpage --image=my-registry.local/my-webpage", serverNodeNames[0])
+			res, err := e2e.RunCmdOnNode("kubectl create deployment my-webpage --image=my-registry.local/library/nginx:1.27.3", serverNodeNames[0])
 			fmt.Println(res)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -145,8 +149,9 @@ var _ = AfterEach(func() {
 })
 
 var _ = AfterSuite(func() {
-
-	if !failed {
+	if failed {
+		Expect(e2e.SaveJournalLogs(append(serverNodeNames, agentNodeNames...))).To(Succeed())
+	} else {
 		Expect(e2e.GetCoverageReport(append(serverNodeNames, agentNodeNames...))).To(Succeed())
 	}
 	if !failed || *ci {

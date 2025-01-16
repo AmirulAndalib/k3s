@@ -46,6 +46,11 @@ type NodeError struct {
 	Err  error
 }
 
+type SvcExternalIP struct {
+	IP     string `json:"ip"`
+	IPMode string `json:"ipMode"`
+}
+
 type ObjIP struct {
 	Name string
 	IPv4 string
@@ -121,6 +126,7 @@ func CreateCluster(nodeOS string, serverCount, agentCount int) ([]string, []stri
 	errg, _ := errgroup.WithContext(context.Background())
 	for _, node := range append(serverNodeNames[1:], agentNodeNames...) {
 		cmd := fmt.Sprintf(`%s %s vagrant up %s &>> vagrant.log`, nodeEnvs, testOptions, node)
+		fmt.Println(cmd)
 		errg.Go(func() error {
 			if _, err := RunCommand(cmd); err != nil {
 				return newNodeError(cmd, node, err)
@@ -261,6 +267,29 @@ func FetchClusterIP(kubeconfig string, servicename string, dualStack bool) (stri
 	return RunCommand(cmd)
 }
 
+// FetchExternalIPs fetches the external IPs of a service
+func FetchExternalIPs(kubeconfig string, servicename string) ([]string, error) {
+	var externalIPs []string
+	cmd := "kubectl get svc " + servicename + " -o jsonpath='{.status.loadBalancer.ingress}' --kubeconfig=" + kubeconfig
+	output, err := RunCommand(cmd)
+	if err != nil {
+		return externalIPs, err
+	}
+
+	var svcExternalIPs []SvcExternalIP
+	err = json.Unmarshal([]byte(output), &svcExternalIPs)
+	if err != nil {
+		return externalIPs, fmt.Errorf("Error unmarshalling JSON: %v", err)
+	}
+
+	// Iterate over externalIPs and append each IP to the ips slice
+	for _, ipEntry := range svcExternalIPs {
+		externalIPs = append(externalIPs, ipEntry.IP)
+	}
+
+	return externalIPs, nil
+}
+
 func FetchIngressIP(kubeconfig string) ([]string, error) {
 	cmd := "kubectl get ing  ingress  -o jsonpath='{.status.loadBalancer.ingress[*].ip}' --kubeconfig=" + kubeconfig
 	res, err := RunCommand(cmd)
@@ -285,22 +314,29 @@ func FetchNodeExternalIP(nodename string) (string, error) {
 }
 
 func GenKubeConfigFile(serverName string) (string, error) {
-	cmd := fmt.Sprintf("vagrant ssh %s -c \"sudo cat /etc/rancher/k3s/k3s.yaml\"", serverName)
-	kubeConfig, err := RunCommand(cmd)
+	kubeConfigFile := fmt.Sprintf("kubeconfig-%s", serverName)
+	cmd := fmt.Sprintf("vagrant scp %s:/etc/rancher/k3s/k3s.yaml ./%s", serverName, kubeConfigFile)
+	_, err := RunCommand(cmd)
 	if err != nil {
 		return "", err
 	}
+
+	kubeConfig, err := os.ReadFile(kubeConfigFile)
+	if err != nil {
+		return "", err
+	}
+
 	re := regexp.MustCompile(`(?m)==> vagrant:.*\n`)
-	kubeConfig = re.ReplaceAllString(kubeConfig, "")
+	modifiedKubeConfig := re.ReplaceAllString(string(kubeConfig), "")
 	nodeIP, err := FetchNodeExternalIP(serverName)
 	if err != nil {
 		return "", err
 	}
-	kubeConfig = strings.Replace(kubeConfig, "127.0.0.1", nodeIP, 1)
-	kubeConfigFile := fmt.Sprintf("kubeconfig-%s", serverName)
-	if err := os.WriteFile(kubeConfigFile, []byte(kubeConfig), 0644); err != nil {
+	modifiedKubeConfig = strings.Replace(modifiedKubeConfig, "127.0.0.1", nodeIP, 1)
+	if err := os.WriteFile(kubeConfigFile, []byte(modifiedKubeConfig), 0644); err != nil {
 		return "", err
 	}
+
 	if err := os.Setenv("E2E_KUBECONFIG", kubeConfigFile); err != nil {
 		return "", err
 	}
@@ -326,6 +362,52 @@ func GenReport(specReport ginkgo.SpecReport) {
 func GetJournalLogs(node string) (string, error) {
 	cmd := "journalctl -u k3s* --no-pager"
 	return RunCmdOnNode(cmd, node)
+}
+
+func TailJournalLogs(lines int, nodes []string) string {
+	logs := &strings.Builder{}
+	for _, node := range nodes {
+		cmd := fmt.Sprintf("journalctl -u k3s* --no-pager --lines=%d", lines)
+		if l, err := RunCmdOnNode(cmd, node); err != nil {
+			fmt.Fprintf(logs, "** failed to read journald log for node %s ***\n%v\n", node, err)
+		} else {
+			fmt.Fprintf(logs, "** journald log for node %s ***\n%s\n", node, l)
+		}
+	}
+	return logs.String()
+}
+
+// SaveJournalLogs saves the journal logs of each node to a <NAME>-jlog.txt file.
+// When used in GHA CI, the logs are uploaded as an artifact on failure.
+func SaveJournalLogs(nodeNames []string) error {
+	for _, node := range nodeNames {
+		lf, err := os.Create(node + "-jlog.txt")
+		if err != nil {
+			return err
+		}
+		defer lf.Close()
+		logs, err := GetJournalLogs(node)
+		if err != nil {
+			return err
+		}
+		if _, err := lf.Write([]byte(logs)); err != nil {
+			return fmt.Errorf("failed to write %s node logs: %v", node, err)
+		}
+	}
+	return nil
+}
+
+func GetConfig(nodes []string) string {
+	config := &strings.Builder{}
+	for _, node := range nodes {
+		cmd := "tar -Pc /etc/rancher/k3s/ | tar -vxPO"
+		if c, err := RunCmdOnNode(cmd, node); err != nil {
+			fmt.Fprintf(config, "** failed to get config for node %s ***\n%v\n", node, err)
+		} else {
+			fmt.Fprintf(config, "** config for node %s ***\n%s\n", node, c)
+		}
+	}
+	return config.String()
 }
 
 // GetVagrantLog returns the logs of on vagrant commands that initialize the nodes and provision K3s on each node.
@@ -466,6 +548,9 @@ func RunCmdOnNode(cmd string, nodename string) (string, error) {
 	}
 	runcmd := "vagrant ssh " + nodename + " -c \"sudo " + injectEnv + cmd + "\""
 	out, err := RunCommand(runcmd)
+	// On GHA CI we see warnings about "[fog][WARNING] Unrecognized arguments: libvirt_ip_command"
+	// these are added to the command output and need to be removed
+	out = strings.ReplaceAll(out, "[fog][WARNING] Unrecognized arguments: libvirt_ip_command\n", "")
 	if err != nil {
 		return out, fmt.Errorf("failed to run command: %s on node %s: %s, %v", cmd, nodename, out, err)
 	}

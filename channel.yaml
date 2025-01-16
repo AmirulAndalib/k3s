@@ -1,7 +1,7 @@
 # Example channels config
 channels:
 - name: stable
-  latest: v1.28.7+k3s1
+  latest: v1.31.4+k3s1
 - name: latest
   latestRegexp: .*
   excludeRegexp: (^[^+]+-|v1\.25\.5\+k3s1|v1\.26\.0\+k3s1)
@@ -55,6 +55,15 @@ channels:
   excludeRegexp: ^[^+]+-
 - name: v1.29
   latestRegexp: v1\.29\..*
+  excludeRegexp: ^[^+]+-
+- name: v1.30
+  latestRegexp: v1\.30\..*
+  excludeRegexp: ^[^+]+-
+- name: v1.31
+  latestRegexp: v1\.31\..*
+  excludeRegexp: ^[^+]+-
+- name: v1.32
+  latestRegexp: v1\.32\..*
   excludeRegexp: ^[^+]+-
 github:
   owner: k3s-io

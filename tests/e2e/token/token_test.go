@@ -14,9 +14,10 @@ import (
 )
 
 // Valid nodeOS:
-// generic/ubuntu2204, generic/centos7, generic/rocky8, opensuse/Leap-15.5.x86_64
+// bento/ubuntu-24.04, opensuse/Leap-15.6.x86_64
+// eurolinux-vagrant/rocky-8, eurolinux-vagrant/rocky-9,
 
-var nodeOS = flag.String("nodeOS", "generic/ubuntu2204", "VM operating system")
+var nodeOS = flag.String("nodeOS", "bento/ubuntu-24.04", "VM operating system")
 var serverCount = flag.Int("serverCount", 3, "number of server nodes")
 var agentCount = flag.Int("agentCount", 2, "number of agent nodes")
 var ci = flag.Bool("ci", false, "running on CI")
@@ -155,7 +156,7 @@ var _ = Describe("Use the token CLI to create and join agents", Ordered, func() 
 		serverToken := "1234"
 		It("Creates a new server token", func() {
 			Expect(e2e.RunCmdOnNode("k3s token rotate -t vagrant --new-token="+serverToken, serverNodeNames[0])).
-				To(ContainSubstring("Token rotated, restart k3s with new token"))
+				To(ContainSubstring("Token rotated, restart k3s nodes with new token"))
 		})
 		It("Restarts servers with the new token", func() {
 			cmd := fmt.Sprintf("sed -i 's/token:.*/token: %s/' /etc/rancher/k3s/config.yaml", serverToken)
@@ -201,7 +202,9 @@ var _ = AfterEach(func() {
 })
 
 var _ = AfterSuite(func() {
-	if !failed {
+	if failed {
+		AddReportEntry("journald-logs", e2e.TailJournalLogs(1000, append(serverNodeNames, agentNodeNames...)))
+	} else {
 		Expect(e2e.GetCoverageReport(append(serverNodeNames, agentNodeNames...))).To(Succeed())
 	}
 	if !failed || *ci {

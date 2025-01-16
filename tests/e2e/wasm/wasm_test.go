@@ -12,8 +12,8 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// Valid nodeOS: generic/ubuntu2204, opensuse/Leap-15.3.x86_64
-var nodeOS = flag.String("nodeOS", "generic/ubuntu2204", "VM operating system")
+// Valid nodeOS: bento/ubuntu-24.04, opensuse/Leap-15.6.x86_64
+var nodeOS = flag.String("nodeOS", "bento/ubuntu-24.04", "VM operating system")
 var serverCount = flag.Int("serverCount", 1, "number of server nodes")
 var agentCount = flag.Int("agentCount", 0, "number of agent nodes")
 var ci = flag.Bool("ci", false, "running on CI")
@@ -135,10 +135,12 @@ var _ = AfterEach(func() {
 })
 
 var _ = AfterSuite(func() {
-	if failed && !*ci {
-		fmt.Println("FAILED!")
+	if failed {
+		Expect(e2e.SaveJournalLogs(append(serverNodeNames, agentNodeNames...))).To(Succeed())
 	} else {
 		Expect(e2e.GetCoverageReport(append(serverNodeNames, agentNodeNames...))).To(Succeed())
+	}
+	if !failed || *ci {
 		Expect(e2e.DestroyCluster()).To(Succeed())
 		Expect(os.Remove(kubeConfigFile)).To(Succeed())
 	}

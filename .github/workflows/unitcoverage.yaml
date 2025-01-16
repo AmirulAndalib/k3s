@@ -28,7 +28,7 @@ permissions:
 jobs:
   test:
     name: Unit Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
     - name: Checkout
@@ -47,7 +47,7 @@ jobs:
       with:
         wait-timeout-minutes: 5
     - name: Upload Results To Codecov
-      uses: codecov/codecov-action@v4
+      uses: codecov/codecov-action@v5
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         files: ./coverage.out

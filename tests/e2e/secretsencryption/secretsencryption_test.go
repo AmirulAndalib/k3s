@@ -15,8 +15,8 @@ import (
 // This test is desigened for the new secrets-encrypt rotate-keys command,
 // Added in v1.28.0+k3s1
 
-// Valid nodeOS: generic/ubuntu2204, opensuse/Leap-15.3.x86_64
-var nodeOS = flag.String("nodeOS", "generic/ubuntu2204", "VM operating system")
+// Valid nodeOS: bento/ubuntu-24.04, opensuse/Leap-15.6.x86_64
+var nodeOS = flag.String("nodeOS", "bento/ubuntu-24.04", "VM operating system")
 var serverCount = flag.Int("serverCount", 3, "number of server nodes")
 var hardened = flag.Bool("hardened", false, "true or false")
 var ci = flag.Bool("ci", false, "running on CI")
@@ -221,7 +221,9 @@ var _ = AfterEach(func() {
 })
 
 var _ = AfterSuite(func() {
-	if !failed {
+	if failed {
+		AddReportEntry("journald-logs", e2e.TailJournalLogs(1000, serverNodeNames))
+	} else {
 		Expect(e2e.GetCoverageReport(serverNodeNames)).To(Succeed())
 	}
 	if !failed || *ci {

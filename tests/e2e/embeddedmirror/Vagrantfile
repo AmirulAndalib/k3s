@@ -2,7 +2,7 @@ ENV['VAGRANT_NO_PARALLEL'] = 'no'
 NODE_ROLES = (ENV['E2E_NODE_ROLES'] ||
   ["server-0", "agent-0"])
 NODE_BOXES = (ENV['E2E_NODE_BOXES'] ||
-  ['generic/ubuntu2204', 'generic/ubuntu2204'])
+  ['bento/ubuntu-24.04', 'bento/ubuntu-24.04'])
 GITHUB_BRANCH = (ENV['E2E_GITHUB_BRANCH'] || "master")
 RELEASE_VERSION = (ENV['E2E_RELEASE_VERSION'] || "")
 GOCOVER = (ENV['E2E_GOCOVER'] || "")
@@ -19,8 +19,8 @@ def provision(vm, role, role_num, node_num)
   node_ip = "#{NETWORK_PREFIX}.#{100+node_num}"
   vm.network "private_network", ip: node_ip, netmask: "255.255.255.0"
 
-  scripts_location = Dir.exists?("./scripts") ? "./scripts" : "../scripts"
-  vagrant_defaults = File.exists?("./vagrantdefaults.rb") ? "./vagrantdefaults.rb" : "../vagrantdefaults.rb"
+  scripts_location = Dir.exist?("./scripts") ? "./scripts" : "../scripts"
+  vagrant_defaults = File.exist?("./vagrantdefaults.rb") ? "./vagrantdefaults.rb" : "../vagrantdefaults.rb"
   load vagrant_defaults
 
   defaultOSConfigure(vm)
@@ -38,7 +38,9 @@ def provision(vm, role, role_num, node_num)
 
   if role.include?("server") && role_num == 0
     vm.provision "private-registry", type: "shell", inline: writePrivateRegistry
-    dockerInstall(vm)
+    vm.provision "create-images-dir", type: "shell", inline: "mkdir -p -m 777 /tmp/images /var/lib/rancher/k3s/agent/images"
+    vm.provision "copy-images-file", type: "file", source: "../../../scripts/airgap/image-list.txt", destination: "/tmp/images/image-list.txt"
+    vm.provision "move-images-file", type: "shell", inline: "mv /tmp/images/image-list.txt /var/lib/rancher/k3s/agent/images/image-list.txt"
 
     vm.provision 'k3s-primary-server', type: 'k3s', run: 'once' do |k3s|
       k3s.args = "server "
@@ -55,6 +57,9 @@ def provision(vm, role, role_num, node_num)
   
   elsif role.include?("server") && role_num != 0
     vm.provision "shell", inline: writePrivateRegistry
+    vm.provision "create-images-dir", type: "shell", inline: "mkdir -p -m 777 /tmp/images /var/lib/rancher/k3s/agent/images"
+    vm.provision "copy-images-file", type: "file", source: "../../../scripts/airgap/image-list.txt", destination: "/tmp/images/image-list.txt"
+    vm.provision "move-images-file", type: "shell", inline: "mv /tmp/images/image-list.txt /var/lib/rancher/k3s/agent/images/image-list.txt"
 
     vm.provision 'k3s-secondary-server', type: 'k3s', run: 'once' do |k3s|
       k3s.args = "server"
@@ -98,6 +103,8 @@ Vagrant.configure("2") do |config|
   config.vm.provider "libvirt" do |v|
     v.cpus = NODE_CPUS
     v.memory = NODE_MEMORY
+    # We replicate the default prefix, but add a timestamp to enable parallel runs and cleanup of old VMs
+    v.default_prefix = File.basename(Dir.getwd) + "_" + Time.now.to_i.to_s + "_"
   end
   config.vm.provider "virtualbox" do |v|
     v.cpus = NODE_CPUS

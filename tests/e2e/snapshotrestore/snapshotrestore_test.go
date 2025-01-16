@@ -14,10 +14,10 @@ import (
 )
 
 // Valid nodeOS:
-// generic/ubuntu2204, generic/centos7, generic/rocky8,
-// opensuse/Leap-15.3.x86_64
+// bento/ubuntu-24.04, opensuse/Leap-15.6.x86_64
+// eurolinux-vagrant/rocky-8, eurolinux-vagrant/rocky-9,
 
-var nodeOS = flag.String("nodeOS", "generic/ubuntu2204", "VM operating system")
+var nodeOS = flag.String("nodeOS", "bento/ubuntu-24.04", "VM operating system")
 var serverCount = flag.Int("serverCount", 3, "number of server nodes")
 var agentCount = flag.Int("agentCount", 1, "number of agent nodes")
 var hardened = flag.Bool("hardened", false, "true or false")
@@ -95,7 +95,7 @@ var _ = Describe("Verify snapshots and cluster restores work", Ordered, func() {
 				cmd := "kubectl get pods -o=name -l k8s-app=nginx-app-clusterip --field-selector=status.phase=Running --kubeconfig=" + kubeConfigFile
 				res, err := e2e.RunCommand(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(res).Should((ContainSubstring("test-clusterip")), "failed cmd: "+cmd+" result: "+res)
+				g.Expect(res).Should((ContainSubstring("test-clusterip")), "failed cmd: %q result: %s", cmd, res)
 			}, "240s", "5s").Should(Succeed())
 		})
 
@@ -143,17 +143,6 @@ var _ = Describe("Verify snapshots and cluster restores work", Ordered, func() {
 
 			cmd = "systemctl start k3s"
 			Expect(e2e.RunCmdOnNode(cmd, serverNodeNames[0])).Error().NotTo(HaveOccurred())
-		})
-
-		It("Resets non bootstrap nodes", func() {
-			for _, nodeName := range serverNodeNames {
-				if nodeName != serverNodeNames[0] {
-					cmd := "k3s server --cluster-reset"
-					response, err := e2e.RunCmdOnNode(cmd, nodeName)
-					Expect(err).NotTo(HaveOccurred())
-					Expect(response).Should(ContainSubstring("Managed etcd cluster membership has been reset, restart without --cluster-reset flag now"))
-				}
-			}
 		})
 
 		It("Checks that other servers are not ready", func() {
@@ -317,7 +306,9 @@ var _ = AfterEach(func() {
 })
 
 var _ = AfterSuite(func() {
-	if !failed {
+	if failed {
+		AddReportEntry("journald-logs", e2e.TailJournalLogs(1000, append(serverNodeNames, agentNodeNames...)))
+	} else {
 		Expect(e2e.GetCoverageReport(append(serverNodeNames, agentNodeNames...))).To(Succeed())
 	}
 	if !failed || *ci {

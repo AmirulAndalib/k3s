@@ -11,12 +11,17 @@ import (
 	"os"
 	"time"
 
+	"github.com/pkg/errors"
+
+	"github.com/gorilla/mux"
 	"github.com/k3s-io/k3s/pkg/cluster/managed"
 	"github.com/k3s-io/k3s/pkg/etcd"
 	"github.com/k3s-io/k3s/pkg/nodepassword"
+	"github.com/k3s-io/k3s/pkg/util"
 	"github.com/k3s-io/k3s/pkg/version"
 	"github.com/sirupsen/logrus"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/util/wait"
 )
 
 // testClusterDB returns a channel that will be closed when the datastore connection is available.
@@ -90,10 +95,12 @@ func (c *Cluster) start(ctx context.Context) error {
 	return c.managedDB.Start(ctx, c.clientAccessInfo)
 }
 
-// registerDBHandlers registers routes for database info with the http request handler
+// registerDBHandlers registers managed-datastore-specific callbacks, and installs additional HTTP route handlers.
+// Note that for etcd, controllers only run on nodes with a local apiserver, in order to provide stable external
+// management of etcd cluster membership without being disrupted when a member is removed from the cluster.
 func (c *Cluster) registerDBHandlers(handler http.Handler) (http.Handler, error) {
 	if c.managedDB == nil {
-		return handler, nil
+		return handlerNoEtcd(handler), nil
 	}
 
 	return c.managedDB.Register(handler)
@@ -126,34 +133,31 @@ func (c *Cluster) assignManagedDriver(ctx context.Context) error {
 	return nil
 }
 
-// setupEtcdProxy periodically updates the etcd proxy with the current list of
+// setupEtcdProxy starts a goroutine to periodically update the etcd proxy with the current list of
 // cluster client URLs, as retrieved from etcd.
 func (c *Cluster) setupEtcdProxy(ctx context.Context, etcdProxy etcd.Proxy) {
 	if c.managedDB == nil {
 		return
 	}
-	go func() {
-		t := time.NewTicker(30 * time.Second)
-		defer t.Stop()
-		for range t.C {
-			newAddresses, err := c.managedDB.GetMembersClientURLs(ctx)
-			if err != nil {
-				logrus.Warnf("failed to get etcd client URLs: %v", err)
-				continue
-			}
-			// client URLs are a full URI, but the proxy only wants host:port
-			var hosts []string
-			for _, address := range newAddresses {
-				u, err := url.Parse(address)
-				if err != nil {
-					logrus.Warnf("failed to parse etcd client URL: %v", err)
-					continue
-				}
-				hosts = append(hosts, u.Host)
-			}
-			etcdProxy.Update(hosts)
+	// We use Poll here instead of Until because we want to wait the interval before running the function.
+	go wait.PollUntilContextCancel(ctx, 30*time.Second, false, func(ctx context.Context) (bool, error) {
+		clientURLs, err := c.managedDB.GetMembersClientURLs(ctx)
+		if err != nil {
+			logrus.Warnf("Failed to get etcd ClientURLs: %v", err)
+			return false, nil
 		}
-	}()
+		// client URLs are a full URI, but the proxy only wants host:port
+		for i, c := range clientURLs {
+			u, err := url.Parse(c)
+			if err != nil {
+				logrus.Warnf("Failed to parse etcd ClientURL: %v", err)
+				return false, nil
+			}
+			clientURLs[i] = u.Host
+		}
+		etcdProxy.Update(clientURLs)
+		return false, nil
+	})
 }
 
 // deleteNodePasswdSecret wipes out the node password secret after restoration
@@ -162,9 +166,24 @@ func (c *Cluster) deleteNodePasswdSecret(ctx context.Context) {
 	secretsClient := c.config.Runtime.Core.Core().V1().Secret()
 	if err := nodepassword.Delete(secretsClient, nodeName); err != nil {
 		if apierrors.IsNotFound(err) {
-			logrus.Debugf("node password secret is not found for node %s", nodeName)
+			logrus.Debugf("Node password secret is not found for node %s", nodeName)
 			return
 		}
 		logrus.Warnf("failed to delete old node password secret: %v", err)
 	}
+}
+
+// handlerNoEtcd wraps a handler with an error message indicating that etcd is not deployed.
+func handlerNoEtcd(handler http.Handler) http.Handler {
+	r := mux.NewRouter().SkipClean(true)
+
+	// Wildcard route for anything after /db/
+	r.HandleFunc("/db/{_:.*}", func(resp http.ResponseWriter, r *http.Request) {
+		util.SendError(errors.New("etcd datastore disabled"), resp, r, http.StatusBadRequest)
+	})
+
+	// Needs to come at the end, otherwise wildcard routes won't work
+	r.NotFoundHandler = handler
+
+	return r
 }
